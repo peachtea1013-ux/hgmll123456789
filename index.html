@@ -22,7 +22,8 @@
 
         html, body {
             width: 100%;
-            height: 100vh;
+            height: 100dvh;
+            min-height: 100dvh;
             overflow: hidden;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #f5f5f5;
@@ -487,6 +488,10 @@
             z-index: 10;
         }
 
+        .modal-footer.three {
+            grid-template-columns: 1fr 1fr 1fr;
+        }
+
         /* 棚卸モーダルを画面上部5%に固定表示 */
         #stocktakeModal {
             align-items: flex-start;
@@ -610,6 +615,10 @@
         /* ========== ボトムシート用背景スクロール禁止 ========== */
         body.modal-open {
             overflow: hidden;
+        }
+
+        body.modal-open #navTabs {
+            display: none;
         }
 
         /* ========== iPhoneノッチ対応 ========== */
@@ -859,6 +868,10 @@
                         <input type="text" id="prodCode" placeholder="例: PRD001">
                     </div>
                     <div class="form-group">
+                        <label>管理用コード</label>
+                        <input type="text" id="prodManageCode" placeholder="例: 管001">
+                    </div>
+                    <div class="form-group">
                         <label>品名</label>
                         <input type="text" id="prodName" placeholder="商品名">
                     </div>
@@ -900,7 +913,8 @@
                     </div>
                 </div>
             </div>
-            <div class="modal-footer">
+            <div class="modal-footer" id="productModalFooter">
+                <button class="btn btn-danger" id="prodDeleteBtn" style="display:none;">削除</button>
                 <button class="btn btn-secondary" onclick="closeModal('productModal')">キャンセル</button>
                 <button class="btn btn-primary" id="prodConfirmBtn">登録</button>
             </div>
@@ -971,38 +985,180 @@
     <input type="file" id="csvFileInput" accept=".csv" style="display: none;">
 
     <script>
+        /*
+        ========================================
+        内部設計整理
+        ========================================
+        ■ 画面構成と役割
+        1) 在庫操作: 使用/納入/発注を記録し、在庫は履歴から再計算。
+        2) 操作履歴: 1000件まで管理、編集・論理削除が可能。
+        3) 商品管理/棚卸: マスタ管理、棚卸セッションを進行・完了。
+        4) 交換周期/カレンダー: 交換予定の月表示と予定一覧。
+        5) データ連携: CSV入出力/JSONバックアップ・復元。
+
+        ■ 各画面が参照・更新する state
+        - 在庫操作: state.masters / state.histories / state.orders / state.ui.filters / state.ui.selectedProductCode
+        - 操作履歴: state.histories
+        - 商品管理/棚卸: state.masters / state.inventories
+        - 交換周期: state.ui.calendar / state.histories / state.masters
+        - データ連携: state 全体
+
+        ■ 在庫再計算フロー
+        1) 操作履歴追加・編集・削除(論理削除)時に再計算を実行
+        2) 商品ごとに履歴を日時順に適用し在庫を確定
+        3) 商品マスタの currentStock はキャッシュとして更新
+
+        ■ 状態管理（state構造）
+        state = {
+          meta: { version, lastUpdated, categories, makers },
+          masters: { [code]: Product },
+          histories: [History],
+          orders: [Order],
+          inventories: { stocktakeMode, stocktakeIndex, stocktakeResults, progress },
+          ui: { currentScreen, selectedProductCode, modal, filters, calendar }
+        }
+
+        ■ LocalStorage に保存する state（単一キー）
+        localStorage["inventory_state_v2"] = state
+
+        ■ 商品マスタ項目（全項目編集可）
+        code, manageCode, name, maker, model, category, minStock, currentStock,
+        price, leadTime, cycleDays, note, deleted, lastStocktakeDate
+        */
+
         // ========================================
         // グローバル状態管理
         // ========================================
-        const STATE = {
-            products: [],
-            history: [],
-            orders: [],
-            categories: [],
-            makers: [],
-            currentScreen: 'inventory',
-            currentFilter: {
-                category: null,
-                search: '',
-                lowStockOnly: false
+        const DEFAULT_STATE = {
+            meta: {
+                version: 2,
+                lastUpdated: null,
+                categories: [],
+                makers: []
             },
-            stocktakeMode: false,
-            stocktakeIndex: 0,
-            stocktakeResults: [],
-            calendarYear: new Date().getFullYear(),
-            calendarMonth: new Date().getMonth()
+            masters: {},
+            histories: [],
+            orders: [],
+            inventories: {
+                stocktakeMode: false,
+                stocktakeIndex: 0,
+                stocktakeResults: [],
+                progress: null
+            },
+            ui: {
+                currentScreen: 'inventory',
+                selectedProductCode: null,
+                modal: null,
+                filters: {
+                    category: null,
+                    search: '',
+                    lowStockOnly: false
+                },
+                calendar: {
+                    year: new Date().getFullYear(),
+                    month: new Date().getMonth(),
+                    selectedDate: null
+                }
+            }
         };
+
+        const STATE = structuredClone(DEFAULT_STATE);
+
+        function registerStateAliases() {
+            Object.defineProperties(STATE, {
+                products: {
+                    get: () => Object.values(STATE.masters),
+                    set: (val) => {
+                        STATE.masters = arrayToMasterMap(Array.isArray(val) ? val : []);
+                    },
+                    enumerable: false
+                },
+                history: {
+                    get: () => STATE.histories,
+                    set: (val) => {
+                        STATE.histories = Array.isArray(val) ? val : [];
+                    },
+                    enumerable: false
+                },
+                categories: {
+                    get: () => STATE.meta.categories,
+                    set: (val) => {
+                        STATE.meta.categories = Array.isArray(val) ? val : [];
+                    },
+                    enumerable: false
+                },
+                makers: {
+                    get: () => STATE.meta.makers,
+                    set: (val) => {
+                        STATE.meta.makers = Array.isArray(val) ? val : [];
+                    },
+                    enumerable: false
+                },
+                currentScreen: {
+                    get: () => STATE.ui.currentScreen,
+                    set: (val) => {
+                        STATE.ui.currentScreen = val;
+                    },
+                    enumerable: false
+                },
+                currentFilter: {
+                    get: () => STATE.ui.filters,
+                    set: (val) => {
+                        STATE.ui.filters = val;
+                    },
+                    enumerable: false
+                },
+                stocktakeMode: {
+                    get: () => STATE.inventories.stocktakeMode,
+                    set: (val) => {
+                        STATE.inventories.stocktakeMode = val;
+                    },
+                    enumerable: false
+                },
+                stocktakeIndex: {
+                    get: () => STATE.inventories.stocktakeIndex,
+                    set: (val) => {
+                        STATE.inventories.stocktakeIndex = val;
+                    },
+                    enumerable: false
+                },
+                stocktakeResults: {
+                    get: () => STATE.inventories.stocktakeResults,
+                    set: (val) => {
+                        STATE.inventories.stocktakeResults = Array.isArray(val) ? val : [];
+                    },
+                    enumerable: false
+                },
+                calendarYear: {
+                    get: () => STATE.ui.calendar.year,
+                    set: (val) => {
+                        STATE.ui.calendar.year = val;
+                    },
+                    enumerable: false
+                },
+                calendarMonth: {
+                    get: () => STATE.ui.calendar.month,
+                    set: (val) => {
+                        STATE.ui.calendar.month = val;
+                    },
+                    enumerable: false
+                }
+            });
+        }
+
+        registerStateAliases();
 
         // ========================================
         // LocalStorage 管理
         // ========================================
         const STORAGE_KEYS = {
-            PRODUCTS: 'inventory_products',
-            HISTORY: 'inventory_history',
-            ORDERS: 'inventory_orders',
-            CATEGORIES: 'inventory_categories',
-            MAKERS: 'inventory_makers',
-            STOCKTAKE_PROGRESS: 'inventory_stocktake_progress'
+            STATE: 'inventory_state_v2',
+            LEGACY_PRODUCTS: 'inventory_products',
+            LEGACY_HISTORY: 'inventory_history',
+            LEGACY_ORDERS: 'inventory_orders',
+            LEGACY_CATEGORIES: 'inventory_categories',
+            LEGACY_MAKERS: 'inventory_makers',
+            LEGACY_STOCKTAKE_PROGRESS: 'inventory_stocktake_progress'
         };
 
         // ========================================
@@ -1015,11 +1171,17 @@
         }
 
         function loadAllData() {
-            STATE.products = loadFromStorage(STORAGE_KEYS.PRODUCTS, []);
-            STATE.history = loadFromStorage(STORAGE_KEYS.HISTORY, []);
-            STATE.orders = loadFromStorage(STORAGE_KEYS.ORDERS, []);
-            STATE.categories = loadFromStorage(STORAGE_KEYS.CATEGORIES, []);
-            STATE.makers = loadFromStorage(STORAGE_KEYS.MAKERS, []);
+            const stored = loadFromStorage(STORAGE_KEYS.STATE, null);
+            if (stored) {
+                hydrateState(stored);
+            } else {
+                migrateLegacyState();
+            }
+            normalizeStateData();
+            refreshMasterCaches();
+            recalcAllStocks();
+            refreshMasterCaches();
+            saveState();
         }
 
         function loadFromStorage(key, defaultValue) {
@@ -1032,12 +1194,194 @@
             }
         }
 
-        function saveToStorage(key, data) {
+        function saveState() {
             try {
-                localStorage.setItem(key, JSON.stringify(data));
+                STATE.meta.lastUpdated = new Date().toISOString();
+                localStorage.setItem(STORAGE_KEYS.STATE, JSON.stringify(STATE));
             } catch (e) {
-                console.error('Storage save error:', key, e);
+                console.error('Storage save error:', STORAGE_KEYS.STATE, e);
                 alert('データ保存に失敗しました。ストレージ容量をご確認ください。');
+            }
+        }
+
+        function arrayToMasterMap(list) {
+            return list.reduce((acc, item) => {
+                if (item && item.code) {
+                    acc[item.code] = item;
+                }
+                return acc;
+            }, {});
+        }
+
+        function hydrateState(data) {
+            const merged = structuredClone(DEFAULT_STATE);
+            if (data && typeof data === 'object') {
+                merged.meta = { ...merged.meta, ...(data.meta || {}) };
+                merged.masters = Array.isArray(data.masters) ? arrayToMasterMap(data.masters) : (data.masters || {});
+                merged.histories = Array.isArray(data.histories) ? data.histories : [];
+                merged.orders = Array.isArray(data.orders) ? data.orders : [];
+                merged.inventories = { ...merged.inventories, ...(data.inventories || {}) };
+                merged.ui = {
+                    ...merged.ui,
+                    ...(data.ui || {}),
+                    filters: { ...merged.ui.filters, ...((data.ui || {}).filters || {}) },
+                    calendar: { ...merged.ui.calendar, ...((data.ui || {}).calendar || {}) }
+                };
+            }
+            Object.assign(STATE, merged);
+        }
+
+        function migrateLegacyState() {
+            const legacyProducts = loadFromStorage(STORAGE_KEYS.LEGACY_PRODUCTS, []);
+            const legacyHistory = loadFromStorage(STORAGE_KEYS.LEGACY_HISTORY, []);
+            const legacyOrders = loadFromStorage(STORAGE_KEYS.LEGACY_ORDERS, []);
+            const legacyCategories = loadFromStorage(STORAGE_KEYS.LEGACY_CATEGORIES, []);
+            const legacyMakers = loadFromStorage(STORAGE_KEYS.LEGACY_MAKERS, []);
+            const legacyStocktake = loadFromStorage(STORAGE_KEYS.LEGACY_STOCKTAKE_PROGRESS, null);
+
+            STATE.masters = arrayToMasterMap(legacyProducts);
+            STATE.histories = Array.isArray(legacyHistory) ? legacyHistory : [];
+            STATE.orders = Array.isArray(legacyOrders) ? legacyOrders : [];
+            STATE.meta.categories = Array.isArray(legacyCategories) ? legacyCategories : [];
+            STATE.meta.makers = Array.isArray(legacyMakers) ? legacyMakers : [];
+            STATE.inventories.progress = legacyStocktake;
+        }
+
+        function normalizeStateData() {
+            STATE.histories = STATE.histories.map(h => ({
+                deleted: false,
+                modified: false,
+                modifiedDate: null,
+                ...h
+            }));
+            STATE.histories.forEach(h => {
+                if (!h.manageCode && STATE.masters[h.productCode]) {
+                    h.manageCode = STATE.masters[h.productCode].manageCode || '';
+                }
+            });
+            STATE.orders = STATE.orders.map(o => ({
+                status: '依頼中',
+                ...o
+            }));
+            STATE.orders.forEach(o => {
+                if (!o.manageCode && STATE.masters[o.productCode]) {
+                    o.manageCode = STATE.masters[o.productCode].manageCode || '';
+                }
+                if (!o.productName && STATE.masters[o.productCode]) {
+                    o.productName = STATE.masters[o.productCode].name || '';
+                }
+            });
+            Object.values(STATE.masters).forEach(product => {
+                product.deleted = !!product.deleted;
+                product.currentStock = Number.isFinite(product.currentStock) ? product.currentStock : 0;
+                product.minStock = Number.isFinite(product.minStock) ? product.minStock : 1;
+                product.manageCode = product.manageCode || '';
+            });
+        }
+
+        function refreshMasterCaches() {
+            const categories = new Set();
+            const makers = new Set();
+            Object.values(STATE.masters).forEach(product => {
+                if (product.category) categories.add(product.category);
+                if (product.maker) makers.add(product.maker);
+            });
+            STATE.meta.categories = Array.from(categories).sort();
+            STATE.meta.makers = Array.from(makers).sort();
+        }
+
+        function recalcAllStocks() {
+            const grouped = {};
+            const histories = STATE.histories.filter(h => !h.deleted);
+
+            Object.values(STATE.masters).forEach(product => {
+                product.currentStock = 0;
+            });
+
+            histories.forEach(entry => {
+                if (!entry.productCode) return;
+                if (!grouped[entry.productCode]) grouped[entry.productCode] = [];
+                grouped[entry.productCode].push(entry);
+            });
+
+            Object.keys(grouped).forEach(code => {
+                const entries = grouped[code].sort((a, b) => {
+                    const diff = new Date(a.datetime) - new Date(b.datetime);
+                    if (diff !== 0) return diff;
+                    return (a.id || '').localeCompare(b.id || '');
+                });
+
+                let stock = 0;
+                entries.forEach(entry => {
+                    if (entry.type === 'stocktake') {
+                        if (Number.isFinite(entry.actualStock)) {
+                            stock = entry.actualStock;
+                            entry.afterStock = stock;
+                            return;
+                        }
+                        if (Number.isFinite(entry.afterStock)) {
+                            stock = entry.afterStock;
+                            return;
+                        }
+                    }
+                    if (entry.type === 'receive') {
+                        stock += entry.quantity;
+                    }
+                    if (entry.type === 'use') {
+                        stock -= entry.quantity;
+                    }
+                    entry.afterStock = stock;
+                });
+
+                if (STATE.masters[code]) {
+                    STATE.masters[code].currentStock = stock;
+                }
+            });
+        }
+
+        function recalcStocksForProduct(code) {
+            if (!code) return;
+            const entries = STATE.histories
+                .filter(h => !h.deleted && h.productCode === code)
+                .sort((a, b) => {
+                    const diff = new Date(a.datetime) - new Date(b.datetime);
+                    if (diff !== 0) return diff;
+                    return (a.id || '').localeCompare(b.id || '');
+                });
+
+            let stock = 0;
+            entries.forEach(entry => {
+                if (entry.type === 'stocktake') {
+                    if (Number.isFinite(entry.actualStock)) {
+                        stock = entry.actualStock;
+                        entry.afterStock = stock;
+                        return;
+                    }
+                    if (Number.isFinite(entry.afterStock)) {
+                        stock = entry.afterStock;
+                        return;
+                    }
+                }
+                if (entry.type === 'receive') stock += entry.quantity;
+                if (entry.type === 'use') stock -= entry.quantity;
+                entry.afterStock = stock;
+            });
+
+            if (STATE.masters[code]) {
+                STATE.masters[code].currentStock = stock;
+            }
+        }
+
+        function enforceHistoryLimit() {
+            const active = STATE.histories.filter(h => !h.deleted);
+            if (active.length <= 1000) return;
+
+            const sorted = active.sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+            const removeCount = active.length - 1000;
+            for (let i = 0; i < removeCount; i++) {
+                const target = sorted[i];
+                target.deleted = true;
+                target.deletedDate = new Date().toISOString();
             }
         }
 
@@ -1110,6 +1454,7 @@
 
             // 商品登録モーダル
             document.getElementById('prodConfirmBtn').addEventListener('click', saveProduct);
+            document.getElementById('prodDeleteBtn').addEventListener('click', deleteProduct);
 
             // 使用・納入・発注確定ボタン
             document.getElementById('opConfirmBtn').addEventListener('click', saveUseOperation);
@@ -1156,21 +1501,19 @@
                 });
             }
 
-            // 使用理由の変更監視
-            document.getElementById('opReason').addEventListener('change', (e) => {
-                const detailSection = document.getElementById('detailReasonSection');
-                if (e.target.value === 'unexpected') {
-                    detailSection.style.display = '';
-                } else {
-                    detailSection.style.display = 'none';
-                    document.getElementById('opDetailReason').value = '';
-                }
-            });
-
             // エクスポート・インポート
             document.getElementById('exportMasterBtn').addEventListener('click', () => exportData('master'));
-            document.getElementById('importMasterBtn').addEventListener('click', () => document.getElementById('csvFileInput').click());
+            document.getElementById('importMasterBtn').addEventListener('click', () => {
+                const input = document.getElementById('csvFileInput');
+                input.dataset.importType = 'master';
+                input.click();
+            });
             document.getElementById('exportHistoryBtn').addEventListener('click', () => exportData('history'));
+            document.getElementById('importHistoryBtn').addEventListener('click', () => {
+                const input = document.getElementById('csvFileInput');
+                input.dataset.importType = 'history';
+                input.click();
+            });
             document.getElementById('backupBtn').addEventListener('click', backupAllData);
             document.getElementById('restoreBtn').addEventListener('click', restoreData);
 
@@ -1206,6 +1549,7 @@
             document.getElementById(screenName).classList.add('active');
 
             STATE.currentScreen = screenName;
+            saveState();
 
             // 画面固有の初期化
             if (screenName === 'inventory') {
@@ -1298,7 +1642,7 @@
             filterContainer.style.overflowY = 'auto';
             filterContainer.style.width = 'auto';
 
-            const categories = [...new Set(STATE.products.map(p => p.category))].filter(Boolean).sort();
+            const categories = [...new Set(STATE.products.filter(p => !p.deleted).map(p => p.category))].filter(Boolean).sort();
 
             categories.forEach(cat => {
                 const chip = document.createElement('button');
@@ -1331,7 +1675,8 @@
 
             let filtered = STATE.products.filter(p => {
                 const matchSearch = p.name.toLowerCase().includes(searchTerm) ||
-                                   p.code.toLowerCase().includes(searchTerm);
+                                   p.code.toLowerCase().includes(searchTerm) ||
+                                   (p.manageCode || '').toLowerCase().includes(searchTerm);
                 const matchCategory = !categoryFilter || p.category === categoryFilter;
                 const isLow = p.currentStock <= p.minStock;
                 const matchLowStock = !lowStockOnly || isLow;
@@ -1386,6 +1731,8 @@
         function openOperationModal(type, productCode) {
             const product = STATE.products.find(p => p.code === productCode);
             if (!type || !product) return;
+            STATE.ui.selectedProductCode = product.code;
+            STATE.ui.modal = type === 'use' ? 'operation' : 'receive';
 
             if (type === 'use') {
                 document.getElementById('operationModal').classList.add('show');
@@ -1398,6 +1745,8 @@
                 document.getElementById('opReason').value = '';
                 document.getElementById('opDetailReason').value = '';
                 document.getElementById('detailReasonSection').style.display = 'none';
+                document.getElementById('otherCommentSection').style.display = 'none';
+                document.getElementById('opOtherComment').value = '';
             } else if (type === 'receive') {
                 document.getElementById('receiveModal').classList.add('show');
                 document.body.classList.add('modal-open');
@@ -1412,6 +1761,8 @@
             const product = STATE.products.find(p => p.code === productCode);
             if (!product) return;
 
+            STATE.ui.selectedProductCode = product.code;
+            STATE.ui.modal = 'order';
             document.getElementById('orderModal').classList.add('show');
             document.body.classList.add('modal-open');
             document.getElementById('ordProductCode').value = product.code;
@@ -1430,35 +1781,33 @@
 
             if (!code || quantity <= 0 || !reason) {
                 alert('必須項目を入力してください');
+                return;
+            }
 
-                            // その他の場合はコメント必須
-                            if (reason === 'other' && !otherComment.trim()) {
-                                alert('コメントを入力してください');
-                                return;
-                            }
+            // その他の場合はコメント必須
+            if (reason === 'other' && !otherComment.trim()) {
+                alert('コメントを入力してください');
+                return;
+            }
+            if (reason === 'unexpected' && !detailReason) {
+                alert('詳細理由を選択してください');
                 return;
             }
 
             const product = STATE.products.find(p => p.code === code);
             if (!product) return;
 
-            const newStock = product.currentStock - quantity;
-            product.currentStock = newStock;
-
             addHistory({
                 datetime: new Date().toISOString(),
                 productCode: code,
                 productName: product.name,
+                manageCode: product.manageCode || '',
                 category: product.category,
                 type: 'use',
                 quantity: quantity,
-                afterStock: newStock,
                 reason: reason,
                 detailReason: reason === 'unexpected' ? detailReason : (reason === 'other' ? otherComment : null)
             });
-
-            saveToStorage(STORAGE_KEYS.PRODUCTS, STATE.products);
-            saveToStorage(STORAGE_KEYS.HISTORY, STATE.history);
 
             closeModal('operationModal');
             renderInventoryList();
@@ -1477,23 +1826,17 @@
             const product = STATE.products.find(p => p.code === code);
             if (!product) return;
 
-            const newStock = product.currentStock + quantity;
-            product.currentStock = newStock;
-
             addHistory({
                 datetime: new Date().toISOString(),
                 productCode: code,
                 productName: product.name,
+                manageCode: product.manageCode || '',
                 category: product.category,
                 type: 'receive',
                 quantity: quantity,
-                afterStock: newStock,
                 reason: null,
                 detailReason: null
             });
-
-            saveToStorage(STORAGE_KEYS.PRODUCTS, STATE.products);
-            saveToStorage(STORAGE_KEYS.HISTORY, STATE.history);
 
             closeModal('receiveModal');
             renderInventoryList();
@@ -1534,9 +1877,12 @@
                 return;
             }
 
+            const product = STATE.products.find(p => p.code === code);
             STATE.orders.push({
                 id: Date.now().toString(),
                 productCode: code,
+                manageCode: product ? product.manageCode || '' : '',
+                productName: product ? product.name : '',
                 quantity: quantity,
                 orderDate: new Date().toISOString().split('T')[0],
                 expectedDate: expectedDate,
@@ -1544,7 +1890,7 @@
                 note: note
             });
 
-            saveToStorage(STORAGE_KEYS.ORDERS, STATE.orders);
+            saveState();
 
             closeModal('orderModal');
             renderInventoryList();
@@ -1558,12 +1904,13 @@
             const listContainer = document.getElementById('historyList');
             const searchLower = searchTerm.toLowerCase();
 
-            let filtered = STATE.history.slice().reverse();
+            let filtered = STATE.history.filter(h => !h.deleted).slice().reverse();
 
             if (searchTerm) {
                 filtered = filtered.filter(h => 
                     h.productName.toLowerCase().includes(searchLower) ||
                     h.productCode.toLowerCase().includes(searchLower) ||
+                    (h.manageCode || '').toLowerCase().includes(searchLower) ||
                     (h.category && h.category.toLowerCase().includes(searchLower))
                 );
             }
@@ -1610,6 +1957,7 @@
                             <div class="list-item-badge">${typeLabel}</div>
                         </div>
                         <div class="list-item-text">コード: ${escapeHtml(item.productCode)}</div>
+                        <div class="list-item-text">管理用コード: ${escapeHtml(item.manageCode || '-')}</div>
                         <div class="list-item-text">カテゴリー: ${escapeHtml(item.category || '-')}</div>
                         <div class="list-item-text">数量: ${item.quantity} 個 → 在庫: ${item.afterStock} 個</div>
                         ${item.reason ? `<div class="list-item-text">理由: ${item.reason} ${detailText}</div>` : ''}
@@ -1623,12 +1971,19 @@
         }
 
         function addHistory(item) {
+            const master = STATE.masters[item.productCode];
             STATE.history.push({
+                manageCode: item.manageCode || (master ? master.manageCode || '' : ''),
                 ...item,
                 id: Date.now().toString(),
+                deleted: false,
+                deletedDate: null,
                 modified: false,
                 modifiedDate: null
             });
+            enforceHistoryLimit();
+            recalcStocksForProduct(item.productCode);
+            saveState();
         }
 
         function openEditHistoryModal(historyIndex) {
@@ -1646,6 +2001,7 @@
 
             document.getElementById('editHistoryModal').classList.add('show');
             document.body.classList.add('modal-open');
+            STATE.ui.modal = 'historyEdit';
             document.getElementById('ehDateTime').value = dateStr;
             document.getElementById('ehProductName').value = item.productName;
             document.getElementById('ehQuantity').value = item.quantity;
@@ -1662,23 +2018,12 @@
                 return;
             }
 
-            const quantityDiff = newQuantity - item.quantity;
             item.quantity = newQuantity;
             item.modified = true;
             item.modifiedDate = new Date().toISOString();
 
-            // 在庫を再計算
-            const product = STATE.products.find(p => p.code === item.productCode);
-            if (product) {
-                if (item.type === 'use') {
-                    product.currentStock += quantityDiff;
-                } else if (item.type === 'receive') {
-                    product.currentStock -= quantityDiff;
-                }
-            }
-
-            saveToStorage(STORAGE_KEYS.HISTORY, STATE.history);
-            saveToStorage(STORAGE_KEYS.PRODUCTS, STATE.products);
+            recalcStocksForProduct(item.productCode);
+            saveState();
 
             closeModal('editHistoryModal');
             renderHistoryList();
@@ -1689,21 +2034,12 @@
             if (!confirm('この履歴を削除しますか？')) return;
 
             const item = STATE.history[index];
-            const product = STATE.products.find(p => p.code === item.productCode);
-
-            // 在庫を逆算して戻す
-            if (product) {
-                if (item.type === 'use') {
-                    product.currentStock += item.quantity;
-                } else if (item.type === 'receive') {
-                    product.currentStock -= item.quantity;
-                }
+            if (item) {
+                item.deleted = true;
+                item.deletedDate = new Date().toISOString();
+                recalcStocksForProduct(item.productCode);
+                saveState();
             }
-
-            STATE.history.splice(index, 1);
-
-            saveToStorage(STORAGE_KEYS.HISTORY, STATE.history);
-            saveToStorage(STORAGE_KEYS.PRODUCTS, STATE.products);
             renderHistoryList();
             alert('履歴を削除しました');
         }
@@ -1719,7 +2055,8 @@
                 if (p.deleted) return false;
                 if (!searchTerm) return true;
                 return p.name.toLowerCase().includes(searchLower) ||
-                       p.code.toLowerCase().includes(searchLower);
+                       p.code.toLowerCase().includes(searchLower) ||
+                       (p.manageCode || '').toLowerCase().includes(searchLower);
             });
 
             if (filtered.length === 0) {
@@ -1744,6 +2081,7 @@
                             <button class="btn btn-small btn-secondary" onclick="editProduct('${product.code}')">編集</button>
                         </div>
                         <div class="list-item-text">コード: ${escapeHtml(product.code)}</div>
+                        <div class="list-item-text">管理用コード: ${escapeHtml(product.manageCode || '-')}</div>
                         <div class="list-item-text">メーカー: ${escapeHtml(product.maker || '-')}</div>
                         <div class="list-item-text">型式: ${escapeHtml(product.model || '-')}</div>
                         <div class="list-item-text">カテゴリー: ${categoryBadge}</div>
@@ -1758,15 +2096,21 @@
         function openProductModal(productCode = null) {
             document.getElementById('productModal').classList.add('show');
             document.body.classList.add('modal-open');
+            STATE.ui.modal = 'product';
+            document.getElementById('productModalFooter').classList.remove('three');
+            document.getElementById('prodDeleteBtn').style.display = 'none';
 
             if (productCode) {
                 const product = STATE.products.find(p => p.code === productCode);
                 if (product) {
                     document.getElementById('productModalTitle').textContent = '商品編集';
+                    document.getElementById('productModalFooter').classList.add('three');
+                    document.getElementById('prodDeleteBtn').style.display = '';
                     // 商品コードを編集可能にする
                     document.getElementById('prodCode').value = product.code;
                     document.getElementById('prodCode').readOnly = false;
                     document.getElementById('prodCode').style.background = 'white';
+                    document.getElementById('prodManageCode').value = product.manageCode || '';
                     document.getElementById('prodName').value = product.name;
                     document.getElementById('prodMaker').value = product.maker || '';
                     document.getElementById('prodModel').value = product.model || '';
@@ -1778,12 +2122,14 @@
                     document.getElementById('prodCycleDays').value = product.cycleDays || '';
                     document.getElementById('prodNote').value = product.note || '';
                     document.getElementById('prodConfirmBtn').dataset.editCode = productCode;
+                    document.getElementById('prodDeleteBtn').dataset.deleteCode = productCode;
                 }
             } else {
                 document.getElementById('productModalTitle').textContent = '新規商品登録';
                 document.getElementById('prodCode').value = '';
                 document.getElementById('prodCode').readOnly = false;
                 document.getElementById('prodCode').style.background = 'white';
+                document.getElementById('prodManageCode').value = '';
                 document.getElementById('prodName').value = '';
                 document.getElementById('prodMaker').value = '';
                 document.getElementById('prodModel').value = '';
@@ -1795,6 +2141,7 @@
                 document.getElementById('prodCycleDays').value = '';
                 document.getElementById('prodNote').value = '';
                 document.getElementById('prodConfirmBtn').dataset.editCode = '';
+                document.getElementById('prodDeleteBtn').dataset.deleteCode = '';
             }
         }
 
@@ -1804,6 +2151,7 @@
 
         function saveProduct() {
             const code = document.getElementById('prodCode').value.trim();
+            const manageCode = document.getElementById('prodManageCode').value.trim();
             const name = document.getElementById('prodName').value.trim();
             const maker = document.getElementById('prodMaker').value.trim();
             const model = document.getElementById('prodModel').value.trim();
@@ -1830,9 +2178,10 @@
                     return;
                 }
 
-                STATE.products.push({
+                const newProduct = {
                     code: code,
                     name: name,
+                    manageCode: manageCode,
                     maker: maker,
                     model: model,
                     category: category,
@@ -1845,20 +2194,37 @@
                     createdDate: new Date().toISOString(),
                     lastStocktakeDate: null,
                     deleted: false
-                });
+                };
+
+                STATE.masters[code] = newProduct;
+
+                if (currentStock > 0) {
+                    addHistory({
+                        datetime: new Date().toISOString(),
+                        productCode: code,
+                        productName: name,
+                        manageCode: manageCode,
+                        category: category,
+                        type: 'stocktake',
+                        quantity: currentStock,
+                        actualStock: currentStock,
+                        afterStock: currentStock,
+                        reason: '初期在庫登録',
+                        detailReason: null
+                    });
+                    newProduct.lastStocktakeDate = new Date().toISOString().split('T')[0];
+                }
 
                 // マスターデータに追加
                 if (category && !STATE.categories.includes(category)) {
                     STATE.categories.push(category);
-                    saveToStorage(STORAGE_KEYS.CATEGORIES, STATE.categories);
                 }
                 if (maker && !STATE.makers.includes(maker)) {
                     STATE.makers.push(maker);
-                    saveToStorage(STORAGE_KEYS.MAKERS, STATE.makers);
                 }
             } else {
                 // 編集
-                const product = STATE.products.find(p => p.code === editCode);
+                const product = STATE.masters[editCode];
                 if (product) {
                     // 商品コードが変更される可能性があるため事前チェック
                     if (code !== editCode) {
@@ -1873,45 +2239,101 @@
                             if (h.productCode === editCode) h.productCode = code;
                         });
                         STATE.orders.forEach(o => {
-                            if (o.productCode === editCode) o.productCode = code;
+                            if (o.productCode === editCode) {
+                                o.productCode = code;
+                                o.manageCode = manageCode || '';
+                            }
                         });
                         if (Array.isArray(STATE.stocktakeResults)) {
                             STATE.stocktakeResults.forEach(r => {
                                 if (r.code === editCode) r.code = code;
                             });
                         }
+                        delete STATE.masters[editCode];
                         product.code = code;
+                        STATE.masters[code] = product;
                     }
 
                     product.name = name;
+                    product.manageCode = manageCode;
                     product.maker = maker;
                     product.model = model;
                     product.category = category;
                     product.minStock = minStock;
-                    product.currentStock = currentStock;
                     product.price = price;
                     product.leadTime = leadTime;
                     product.cycleDays = cycleDays;
                     product.note = note;
 
+                    STATE.history.forEach(h => {
+                        if (h.productCode === product.code) {
+                            h.productName = product.name;
+                            h.category = product.category;
+                            h.manageCode = product.manageCode || '';
+                        }
+                    });
+                    STATE.orders.forEach(o => {
+                        if (o.productCode === product.code) {
+                            o.manageCode = product.manageCode || '';
+                            o.productName = product.name;
+                        }
+                    });
+
+                    if (currentStock !== product.currentStock) {
+                        addHistory({
+                            datetime: new Date().toISOString(),
+                            productCode: product.code,
+                            productName: product.name,
+                            manageCode: product.manageCode || '',
+                            category: product.category,
+                            type: 'stocktake',
+                            quantity: Math.abs(currentStock - product.currentStock),
+                            actualStock: currentStock,
+                            afterStock: currentStock,
+                            reason: '在庫数修正',
+                            detailReason: null
+                        });
+                        product.lastStocktakeDate = new Date().toISOString().split('T')[0];
+                    }
+
                     // マスターデータに追加
                     if (category && !STATE.categories.includes(category)) {
                         STATE.categories.push(category);
-                        saveToStorage(STORAGE_KEYS.CATEGORIES, STATE.categories);
                     }
                     if (maker && !STATE.makers.includes(maker)) {
                         STATE.makers.push(maker);
-                        saveToStorage(STORAGE_KEYS.MAKERS, STATE.makers);
                     }
                 }
             }
 
-            saveToStorage(STORAGE_KEYS.PRODUCTS, STATE.products);
+            saveState();
             closeModal('productModal');
             renderMasterList();
             renderCategoryFilter();
             renderInventoryList();
             alert('商品情報を保存しました');
+        }
+
+        function deleteProduct() {
+            const code = document.getElementById('prodDeleteBtn').dataset.deleteCode;
+            if (!code) return;
+
+            const product = STATE.masters[code];
+            if (!product) return;
+
+            if (!confirm(`商品「${product.name}」を削除しますか？\n削除は論理削除として記録されます。`)) {
+                return;
+            }
+
+            product.deleted = true;
+            product.deletedDate = new Date().toISOString();
+            refreshMasterCaches();
+            saveState();
+            closeModal('productModal');
+            renderMasterList();
+            renderCategoryFilter();
+            renderInventoryList();
+            alert('商品を削除しました');
         }
 
         function startStocktake() {
@@ -1921,7 +2343,7 @@
             }
 
             // 既に途中の進捗があれば復元して再開（途中保存あり）
-            const saved = loadFromStorage(STORAGE_KEYS.STOCKTAKE_PROGRESS, null);
+            const saved = STATE.inventories.progress;
             const products = STATE.products.filter(p => !p.deleted);
 
             STATE.stocktakeMode = true;
@@ -1955,11 +2377,12 @@
 
             document.getElementById('stocktakeModal').classList.add('show');
             document.body.classList.add('modal-open');
+            STATE.ui.modal = 'stocktake';
             document.getElementById('stProductCode').value = product.code;
             document.getElementById('stProductName').value = product.name;
             document.getElementById('stSystemStock').value = product.currentStock;
             // 前回入力があれば復元
-            const prev = loadFromStorage(STORAGE_KEYS.STOCKTAKE_PROGRESS, null);
+            const prev = STATE.inventories.progress;
             let restoredValue = '';
             if (prev && Array.isArray(prev.results)) {
                 const found = prev.results.find(r => r.code === product.code);
@@ -1975,7 +2398,8 @@
                     index: STATE.stocktakeIndex,
                     results: STATE.stocktakeResults
                 };
-                saveToStorage(STORAGE_KEYS.STOCKTAKE_PROGRESS, progress);
+                STATE.inventories.progress = progress;
+                saveState();
             } catch (e) {
                 console.error('進捗の保存に失敗しました', e);
             }
@@ -2029,31 +2453,27 @@
                 if (product) {
                     const diff = result.actualStock - result.systemStock;
 
-                    if (diff !== 0) {
-                        const type = diff > 0 ? 'receive' : 'use';
-                        addHistory({
-                            datetime: date.toISOString(),
-                            productCode: result.code,
-                            productName: result.name,
-                            category: product.category,
-                            type: 'stocktake',
-                            quantity: Math.abs(diff),
-                            afterStock: result.actualStock,
-                            reason: null,
-                            detailReason: null
-                        });
-                    }
+                    addHistory({
+                        datetime: date.toISOString(),
+                        productCode: result.code,
+                        productName: result.name,
+                        manageCode: product.manageCode || '',
+                        category: product.category,
+                        type: 'stocktake',
+                        quantity: Math.abs(diff),
+                        actualStock: result.actualStock,
+                        afterStock: result.actualStock,
+                        reason: '棚卸',
+                        detailReason: null
+                    });
 
-                    product.currentStock = result.actualStock;
                     product.lastStocktakeDate = date.toISOString().split('T')[0];
                 }
             });
 
-            saveToStorage(STORAGE_KEYS.PRODUCTS, STATE.products);
-            saveToStorage(STORAGE_KEYS.HISTORY, STATE.history);
-
             // 完了したら進捗を削除
-            try { localStorage.removeItem(STORAGE_KEYS.STOCKTAKE_PROGRESS); } catch (e) {}
+            STATE.inventories.progress = null;
+            saveState();
 
             closeModal('stocktakeModal');
             renderMasterList();
@@ -2061,6 +2481,7 @@
             alert(`棚卸が完了しました (${STATE.stocktakeResults.length}件)`);
 
             STATE.stocktakeResults = [];
+            saveState();
         }
 
         // ========================================
@@ -2076,6 +2497,7 @@
             const today = new Date();
             const year = STATE.calendarYear;
             const month = STATE.calendarMonth;
+            const selectedDate = STATE.ui.calendar.selectedDate;
 
             // 月表示を更新
             const monthNames = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
@@ -2134,6 +2556,9 @@
                     bgColor = '#1a73e8';
                     textColor = 'white';
                     borderStyle = '2px solid #1a73e8';
+                } else if (selectedDate === dateStr) {
+                    borderStyle = '2px solid #f57f17';
+                    bgColor = '#fff8e1';
                 } else if (hasSchedule) {
                     bgColor = '#fff3e0';
                     borderStyle = '2px solid #f57f17';
@@ -2170,19 +2595,16 @@
         }
 
         function selectCalendarDate(dateStr) {
+            STATE.ui.calendar.selectedDate = dateStr;
+            renderMonthCalendar();
             renderScheduleList(dateStr);
-            // 選択日付をカレンダーに表示
-            const allDays = document.querySelectorAll('#calendarContainer div[style*="cursor: pointer"]');
-            allDays.forEach(day => {
-                day.style.borderColor = day.textContent.includes('') ? '#f57f17' : '#e0e0e0';
-            });
         }
 
         function calculateNextScheduleDate(product) {
             if (!product.cycleDays) return null;
 
             const lastUse = STATE.history
-                .filter(h => h.productCode === product.code && h.type === 'use')
+                .filter(h => !h.deleted && h.productCode === product.code && h.type === 'use')
                 .sort((a, b) => new Date(b.datetime) - new Date(a.datetime))[0];
 
             if (!lastUse) return null;
@@ -2274,18 +2696,18 @@
             let filename = '';
 
             if (type === 'master') {
-                csv = 'コード,品名,メーカー,型式,カテゴリー,最低在庫,現在庫,金額,リードタイム,交換周期,備考\n';
+                csv = 'コード,管理用コード,品名,メーカー,型式,カテゴリー,最低在庫,現在庫,金額,リードタイム,交換周期,備考\n';
                 STATE.products.forEach(p => {
                     if (!p.deleted) {
-                        csv += `"${p.code}","${p.name}","${p.maker || ''}","${p.model || ''}","${p.category || ''}",${p.minStock},${p.currentStock},${p.price || 0},${p.leadTime || 0},${p.cycleDays || ''},"${p.note || ''}"\n`;
+                        csv += `"${p.code}","${p.manageCode || ''}","${p.name}","${p.maker || ''}","${p.model || ''}","${p.category || ''}",${p.minStock},${p.currentStock},${p.price || 0},${p.leadTime || 0},${p.cycleDays || ''},"${p.note || ''}"\n`;
                     }
                 });
                 filename = `在庫マスター_${new Date().toISOString().split('T')[0]}.csv`;
             } else if (type === 'history') {
-                csv = '日時,コード,品名,カテゴリー,操作種別,数量,操作後在庫,理由,詳細理由\n';
-                STATE.history.forEach(h => {
+                csv = '日時,コード,管理用コード,品名,カテゴリー,操作種別,数量,操作後在庫,理由,詳細理由\n';
+                STATE.history.filter(h => !h.deleted).forEach(h => {
                     const datetime = new Date(h.datetime).toLocaleString('ja-JP');
-                    csv += `"${datetime}","${h.productCode}","${h.productName}","${h.category || ''}","${h.type}",${h.quantity},${h.afterStock},"${h.reason || ''}","${h.detailReason || ''}"\n`;
+                    csv += `"${datetime}","${h.productCode}","${h.manageCode || ''}","${h.productName}","${h.category || ''}","${h.type}",${h.quantity},${h.afterStock},"${h.reason || ''}","${h.detailReason || ''}"\n`;
                 });
                 filename = `操作履歴_${new Date().toISOString().split('T')[0]}.csv`;
             }
@@ -2306,51 +2728,91 @@
             const file = e.target.files[0];
             if (!file) return;
 
+            const importType = e.target.dataset.importType || 'master';
             const reader = new FileReader();
             reader.onload = (event) => {
                 try {
                     const csv = event.target.result;
                     const lines = csv.split('\n');
-                    const headers = lines[0].split(',');
 
-                    for (let i = 1; i < lines.length; i++) {
-                        const line = lines[i].trim();
-                        if (!line) continue;
+                    if (importType === 'master') {
+                        for (let i = 1; i < lines.length; i++) {
+                            const line = lines[i].trim();
+                            if (!line) continue;
 
-                        const values = parseCSVLine(line);
-                        const code = values[0]?.replace(/"/g, '').trim();
+                            const values = parseCSVLine(line);
+                            const code = values[0]?.replace(/"/g, '').trim();
 
-                        if (code) {
-                            const existing = STATE.products.find(p => p.code === code);
+                            if (code) {
+                                const existing = STATE.masters[code];
                             const product = {
                                 code: code,
-                                name: values[1]?.replace(/"/g, '').trim() || '',
-                                maker: values[2]?.replace(/"/g, '').trim() || '',
-                                model: values[3]?.replace(/"/g, '').trim() || '',
-                                category: values[4]?.replace(/"/g, '').trim() || '',
-                                minStock: parseInt(values[5]) || 1,
-                                currentStock: parseInt(values[6]) || 0,
-                                price: parseInt(values[7]) || 0,
-                                leadTime: parseInt(values[8]) || 0,
-                                cycleDays: values[9] ? parseInt(values[9]) : null,
-                                note: values[10]?.replace(/"/g, '').trim() || '',
+                                manageCode: values[1]?.replace(/"/g, '').trim() || '',
+                                name: values[2]?.replace(/"/g, '').trim() || '',
+                                maker: values[3]?.replace(/"/g, '').trim() || '',
+                                model: values[4]?.replace(/"/g, '').trim() || '',
+                                category: values[5]?.replace(/"/g, '').trim() || '',
+                                minStock: parseInt(values[6]) || 1,
+                                currentStock: parseInt(values[7]) || 0,
+                                price: parseInt(values[8]) || 0,
+                                leadTime: parseInt(values[9]) || 0,
+                                cycleDays: values[10] ? parseInt(values[10]) : null,
+                                note: values[11]?.replace(/"/g, '').trim() || '',
                                 deleted: false
                             };
 
-                            if (existing) {
-                                Object.assign(existing, product);
-                            } else {
-                                product.createdDate = new Date().toISOString();
-                                STATE.products.push(product);
+                                if (existing) {
+                                    Object.assign(existing, product);
+                                } else {
+                                    product.createdDate = new Date().toISOString();
+                                    STATE.masters[code] = product;
+                                }
                             }
                         }
-                    }
 
-                    saveToStorage(STORAGE_KEYS.PRODUCTS, STATE.products);
-                    renderMasterList();
-                    renderCategoryFilter();
-                    renderInventoryList();
-                    alert('マスターデータをインポートしました');
+                        refreshMasterCaches();
+                        recalcAllStocks();
+                        saveState();
+                        renderMasterList();
+                        renderCategoryFilter();
+                        renderInventoryList();
+                        alert('マスターデータをインポートしました');
+                    } else if (importType === 'history') {
+                        for (let i = 1; i < lines.length; i++) {
+                            const line = lines[i].trim();
+                            if (!line) continue;
+
+                            const values = parseCSVLine(line);
+                            const hasManageCode = values.length >= 10;
+                            const datetimeRaw = values[0]?.replace(/"/g, '').trim();
+                            const productCode = values[1]?.replace(/"/g, '').trim();
+                            const manageCode = hasManageCode ? values[2]?.replace(/"/g, '').trim() : '';
+                            const productName = hasManageCode ? values[3]?.replace(/"/g, '').trim() : values[2]?.replace(/"/g, '').trim();
+                            if (!productCode) continue;
+
+                            const parsedDate = new Date(datetimeRaw);
+                            const datetime = isNaN(parsedDate.getTime()) ? new Date().toISOString() : parsedDate.toISOString();
+                            const historyItem = {
+                                datetime: datetime,
+                                productCode: productCode,
+                                manageCode: manageCode || '',
+                                productName: productName || '',
+                                category: hasManageCode ? values[4]?.replace(/"/g, '').trim() || '' : values[3]?.replace(/"/g, '').trim() || '',
+                                type: hasManageCode ? values[5]?.replace(/"/g, '').trim() || 'receive' : values[4]?.replace(/"/g, '').trim() || 'receive',
+                                quantity: parseInt(hasManageCode ? values[6] : values[5]) || 0,
+                                afterStock: parseInt(hasManageCode ? values[7] : values[6]) || 0,
+                                reason: hasManageCode ? values[8]?.replace(/"/g, '').trim() || null : values[7]?.replace(/"/g, '').trim() || null,
+                                detailReason: hasManageCode ? values[9]?.replace(/"/g, '').trim() || null : values[8]?.replace(/"/g, '').trim() || null
+                            };
+                            addHistory(historyItem);
+                        }
+
+                        recalcAllStocks();
+                        saveState();
+                        renderHistoryList();
+                        renderInventoryList();
+                        alert('操作履歴をインポートしました');
+                    }
                 } catch (err) {
                     alert('CSVファイルの処理に失敗しました: ' + err.message);
                 }
@@ -2358,6 +2820,7 @@
             reader.readAsText(file, 'utf-8');
 
             document.getElementById('csvFileInput').value = '';
+            document.getElementById('csvFileInput').dataset.importType = '';
         }
 
         function parseCSVLine(line) {
@@ -2383,11 +2846,7 @@
 
         function backupAllData() {
             const backup = {
-                products: STATE.products,
-                history: STATE.history,
-                orders: STATE.orders,
-                categories: STATE.categories,
-                makers: STATE.makers,
+                state: STATE,
                 backupDate: new Date().toISOString()
             };
 
@@ -2418,19 +2877,20 @@
                             return;
                         }
 
-                        STATE.products = backup.products || [];
-                        STATE.history = backup.history || [];
-                        STATE.orders = backup.orders || [];
-                        STATE.categories = backup.categories || [];
-                        STATE.makers = backup.makers || [];
+                        if (backup.state) {
+                            hydrateState(backup.state);
+                        } else {
+                            STATE.products = backup.products || [];
+                            STATE.history = backup.history || [];
+                            STATE.orders = backup.orders || [];
+                            STATE.categories = backup.categories || [];
+                            STATE.makers = backup.makers || [];
+                        }
 
-                        saveToStorage(STORAGE_KEYS.PRODUCTS, STATE.products);
-                        saveToStorage(STORAGE_KEYS.HISTORY, STATE.history);
-                        saveToStorage(STORAGE_KEYS.ORDERS, STATE.orders);
-                        saveToStorage(STORAGE_KEYS.CATEGORIES, STATE.categories);
-                        saveToStorage(STORAGE_KEYS.MAKERS, STATE.makers);
-
-                        loadAllData();
+                        normalizeStateData();
+                        refreshMasterCaches();
+                        recalcAllStocks();
+                        saveState();
                         renderCurrentScreen();
                         alert('データを復元しました');
                     } catch (err) {
@@ -2453,6 +2913,8 @@
             }
             modal.classList.remove('show');
             document.body.classList.remove('modal-open');
+            STATE.ui.modal = null;
+            STATE.ui.selectedProductCode = null;
         }
 
         function renderCurrentScreen() {
