@@ -3,304 +3,265 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, viewport-fit=cover">
-<title>在庫管理PWA（STEP2 完成）</title>
+<title>在庫管理PWA 完成版</title>
 
 <style>
-/* ===== iOS Safari / PWA ズレ対策 ===== */
-html, body {
-  margin: 0;
-  padding: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
-  background: #f6f7f9;
-  height: 100%;
+/* ===== iOS / PWA 安定化 ===== */
+html,body{
+  margin:0;
+  padding:0;
+  background:#f6f7f9;
+  font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;
 }
-button, input, select {
-  font-size: 16px;
+header{
+  padding:env(safe-area-inset-top) 12px 12px;
+  background:#222;
+  color:#fff;
+  text-align:center;
 }
-header {
-  padding: env(safe-area-inset-top) 12px 12px;
-  background: #222;
-  color: #fff;
+nav{
+  display:flex;
+  position:fixed;
+  bottom:0;
+  left:0;
+  right:0;
+  padding:6px env(safe-area-inset-right) calc(6px + env(safe-area-inset-bottom)) env(safe-area-inset-left);
+  background:#fff;
+  border-top:1px solid #ccc;
 }
-main {
-  padding: 12px;
+nav button{
+  flex:1;
+  font-size:13px;
+  padding:6px;
 }
-section {
-  background: #fff;
-  border-radius: 10px;
-  padding: 12px;
-  margin-bottom: 12px;
+main{
+  padding:12px;
+  padding-bottom:80px;
 }
-h2 {
-  margin: 0 0 8px 0;
-  font-size: 16px;
+section{
+  display:none;
+  background:#fff;
+  border-radius:10px;
+  padding:12px;
 }
-label {
-  display: block;
-  font-size: 13px;
-  margin-top: 6px;
+section.active{display:block}
+h2{margin:0 0 8px;font-size:16px}
+label{font-size:13px;display:block;margin-top:6px}
+input,select,button{
+  width:100%;
+  font-size:16px;
+  padding:6px;
+  margin-top:2px;
 }
-input, select {
-  width: 100%;
-  padding: 6px;
-  margin-top: 2px;
+button{
+  border:none;
+  border-radius:6px;
+  background:#007aff;
+  color:#fff;
 }
-button {
-  margin-top: 10px;
-  padding: 8px;
-  width: 100%;
-  border: none;
-  border-radius: 6px;
-  background: #007aff;
-  color: #fff;
+button.warn{background:#ff9500}
+button.danger{background:#d93025}
+.list{
+  border-bottom:1px solid #ddd;
+  padding:6px 0;
+  font-size:13px;
 }
-button.danger {
-  background: #d93025;
+.small{font-size:12px;color:#666}
+.flex{display:flex;gap:6px}
+.flex button{flex:1}
+
+/* ===== モーダル ===== */
+.modal{
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,.4);
+  display:none;
+  align-items:center;
+  justify-content:center;
 }
-.list-item {
-  border-bottom: 1px solid #ddd;
-  padding: 6px 0;
-}
-.small {
-  font-size: 12px;
-  color: #666;
-}
-.flex {
-  display: flex;
-  gap: 6px;
-}
-.flex button {
-  width: auto;
-  flex: 1;
+.modal.active{display:flex}
+.modal-box{
+  background:#fff;
+  width:90%;
+  padding:12px;
+  border-radius:10px;
 }
 </style>
 </head>
 
 <body>
-<header>
-  <strong>在庫管理（STEP2 商品マスター）</strong>
-</header>
+<header>在庫管理ツール（完成版）</header>
 
 <main>
 
-<!-- ===== 商品マスター登録 ===== -->
-<section>
-  <h2>商品マスター 新規登録</h2>
-
-  <label>商品コード（必須・一意）</label>
-  <input id="code">
-
-  <label>商品名</label>
-  <input id="name">
-
-  <label>カテゴリー</label>
-  <input id="category">
-
-  <label>メーカー</label>
-  <input id="maker">
-
-  <label>型番</label>
-  <input id="model">
-
-  <button onclick="addProduct()">登録</button>
+<!-- ① 在庫操作 -->
+<section id="scr-stock" class="active">
+<h2>在庫操作</h2>
+<label>商品</label><select id="stockProduct"></select>
+<label>数量</label><input id="stockQty" type="number" value="1">
+<div class="flex">
+<button onclick="stockIn()">入庫</button>
+<button class="danger" onclick="stockOut()">使用</button>
+<button class="warn" onclick="openExchange()">突発交換</button>
+</div>
 </section>
 
-<!-- ===== 商品マスター一覧 ===== -->
-<section>
-  <h2>商品マスター一覧</h2>
-  <div id="productList"></div>
+<!-- ② 履歴 -->
+<section id="scr-history">
+<h2>操作履歴</h2>
+<div id="historyList"></div>
 </section>
 
-<!-- ===== 在庫操作 ===== -->
-<section>
-  <h2>在庫操作</h2>
-
-  <label>商品選択</label>
-  <select id="productSelect"></select>
-
-  <label>数量</label>
-  <input id="qty" type="number" value="1">
-
-  <div class="flex">
-    <button onclick="stockIn()">入庫</button>
-    <button class="danger" onclick="stockOut()">使用</button>
-  </div>
+<!-- ③ 商品マスタ／棚卸 -->
+<section id="scr-master">
+<h2>商品登録</h2>
+<label>商品コード</label><input id="mCode">
+<label>商品名</label><input id="mName">
+<label>最低在庫</label><input id="mMin" type="number" value="0">
+<button onclick="addProduct()">登録</button>
+<hr>
+<h2>商品一覧</h2>
+<div id="productList"></div>
 </section>
 
-<!-- ===== 履歴 ===== -->
-<section>
-  <h2>履歴</h2>
-  <div id="historyList"></div>
+<!-- ④ 交換周期カレンダー -->
+<section id="scr-calendar">
+<h2>交換周期カレンダー</h2>
+<div id="calendar"></div>
+</section>
+
+<!-- ⑤ データ連携 -->
+<section id="scr-data">
+<h2>データ連携</h2>
+<button onclick="exportJSON()">JSONバックアップ</button>
+<button onclick="exportCSV()">CSVエクスポート</button>
+<input type="file" onchange="importJSON(event)">
 </section>
 
 </main>
 
+<nav>
+<button onclick="show('stock')">在庫</button>
+<button onclick="show('history')">履歴</button>
+<button onclick="show('master')">マスタ</button>
+<button onclick="show('calendar')">周期</button>
+<button onclick="show('data')">連携</button>
+</nav>
+
+<!-- 突発交換モーダル -->
+<div class="modal" id="exchangeModal">
+<div class="modal-box">
+<h2>突発交換理由</h2>
+<select id="exchangeReason">
+<option value="">選択</option>
+<option>破損</option>
+<option>紛失</option>
+<option>摩耗</option>
+<option>劣化</option>
+</select>
+<button class="warn" onclick="confirmExchange()">確定</button>
+<button onclick="closeExchange()">キャンセル</button>
+</div>
+</div>
+
 <script>
-/* =====================
-   LocalStorage 構造
-   products: [{code,name,category,maker,model,stock}]
-   history: [{time,code,type,qty}]
-===================== */
+/* ===== state ===== */
+const LS="inventory_state_v1";
+let state=JSON.parse(localStorage.getItem(LS)||JSON.stringify({
+  masters:{},
+  histories:[],
+  ui:{screen:"stock",exchangeTarget:null}
+}));
 
-const LS_PRODUCTS = "products_v2";
-const LS_HISTORY  = "history_v2";
+function save(){localStorage.setItem(LS,JSON.stringify(state));}
 
-function loadProducts() {
-  return JSON.parse(localStorage.getItem(LS_PRODUCTS) || "[]");
-}
-function saveProducts(data) {
-  localStorage.setItem(LS_PRODUCTS, JSON.stringify(data));
-}
-function loadHistory() {
-  return JSON.parse(localStorage.getItem(LS_HISTORY) || "[]");
-}
-function saveHistory(data) {
-  localStorage.setItem(LS_HISTORY, JSON.stringify(data));
+/* ===== 画面切替 ===== */
+function show(s){
+  state.ui.screen=s;
+  document.querySelectorAll("section").forEach(sec=>sec.classList.remove("active"));
+  document.getElementById("scr-"+s).classList.add("active");
+  save();
 }
 
-/* ===== 商品登録 ===== */
-function addProduct() {
-  const code = codeEl.value.trim();
-  if (!code) {
-    alert("商品コードは必須です");
-    return;
-  }
+/* ===== 商品 ===== */
+function addProduct(){
+  if(!mCode.value){alert("コード必須");return;}
+  if(state.masters[mCode.value]){alert("重複");return;}
+  state.masters[mCode.value]={name:mName.value,min:Number(mMin.value),stock:0};
+  mCode.value=mName.value="";
+  save();render();
+}
 
-  const products = loadProducts();
-  if (products.some(p => p.code === code)) {
-    alert("同じ商品コードが存在します");
-    return;
-  }
+/* ===== 在庫 ===== */
+function stockIn(){changeStock("IN")}
+function stockOut(){changeStock("OUT")}
 
-  products.push({
-    code,
-    name: nameEl.value.trim(),
-    category: categoryEl.value.trim(),
-    maker: makerEl.value.trim(),
-    model: modelEl.value.trim(),
-    stock: 0
+function changeStock(type,reason=""){
+  const c=stockProduct.value,q=Number(stockQty.value);
+  const p=state.masters[c];
+  if(!p||q<=0)return;
+  if(type!=="IN"&&p.stock<q){alert("在庫不足");return;}
+  p.stock+=(type==="IN"?q:-q);
+  state.histories.unshift({time:new Date().toLocaleString(),code:c,type,qty:q,reason});
+  save();render();
+}
+
+/* ===== 突発交換 ===== */
+function openExchange(){
+  state.ui.exchangeTarget=stockProduct.value;
+  exchangeModal.classList.add("active");
+}
+function closeExchange(){
+  exchangeReason.value="";
+  exchangeModal.classList.remove("active");
+}
+function confirmExchange(){
+  if(!exchangeReason.value){alert("理由必須");return;}
+  closeExchange();
+  changeStock("EXCHANGE",exchangeReason.value);
+}
+
+/* ===== 出力 ===== */
+function render(){
+  stockProduct.innerHTML="";
+  productList.innerHTML="";
+  Object.entries(state.masters).forEach(([c,p])=>{
+    stockProduct.innerHTML+=`<option value="${c}">${c}｜${p.name}</option>`;
+    productList.innerHTML+=`<div class="list">${c} ${p.name}<br>
+    <span class="small">在庫:${p.stock} / 最低:${p.min}</span></div>`;
   });
 
-  saveProducts(products);
-  clearInputs();
-  renderAll();
-}
-
-/* ===== 在庫処理 ===== */
-function stockIn() {
-  stockChange("IN");
-}
-function stockOut() {
-  stockChange("OUT");
-}
-
-function stockChange(type) {
-  const code = productSelect.value;
-  const qty = Number(qtyEl.value);
-  if (!code || qty <= 0) return;
-
-  const products = loadProducts();
-  const p = products.find(p => p.code === code);
-  if (!p) return;
-
-  if (type === "OUT" && p.stock < qty) {
-    alert("在庫不足");
-    return;
-  }
-
-  p.stock += (type === "IN" ? qty : -qty);
-  saveProducts(products);
-
-  const history = loadHistory();
-  history.unshift({
-    time: new Date().toLocaleString(),
-    code,
-    type,
-    qty
+  historyList.innerHTML="";
+  state.histories.forEach(h=>{
+    historyList.innerHTML+=`<div class="list small">
+    ${h.time} ${h.code} ${h.type} ${h.qty} ${h.reason||""}</div>`;
   });
-  saveHistory(history);
 
-  renderAll();
+  calendar.innerHTML="（簡易表示）";
 }
 
-/* ===== 削除 ===== */
-function deleteProduct(code) {
-  if (!confirm("削除しますか？履歴は残ります")) return;
-  const products = loadProducts().filter(p => p.code !== code);
-  saveProducts(products);
-  renderAll();
+/* ===== CSV / JSON ===== */
+function exportJSON(){
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([JSON.stringify(state)],{type:"application/json"}));
+  a.download="backup.json";a.click();
 }
-
-/* ===== 描画 ===== */
-function renderAll() {
-  renderProducts();
-  renderSelect();
-  renderHistory();
-}
-
-function renderProducts() {
-  const list = productList;
-  list.innerHTML = "";
-  loadProducts().forEach(p => {
-    const div = document.createElement("div");
-    div.className = "list-item";
-    div.innerHTML = `
-      <strong>${p.code}</strong> ${p.name || ""}<br>
-      <span class="small">
-        在庫: ${p.stock} /
-        ${p.category || "-"} /
-        ${p.maker || "-"} /
-        ${p.model || "-"}
-      </span>
-      <button class="danger" onclick="deleteProduct('${p.code}')">削除</button>
-    `;
-    list.appendChild(div);
+function exportCSV(){
+  let csv="time,code,type,qty,reason\n";
+  state.histories.forEach(h=>{
+    csv+=`${h.time},${h.code},${h.type},${h.qty},${h.reason||""}\n`;
   });
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
+  a.download="history.csv";a.click();
+}
+function importJSON(e){
+  const r=new FileReader();
+  r.onload=()=>{state=JSON.parse(r.result);save();render();}
+  r.readAsText(e.target.files[0]);
 }
 
-function renderSelect() {
-  const sel = productSelect;
-  sel.innerHTML = "";
-  loadProducts().forEach(p => {
-    const o = document.createElement("option");
-    o.value = p.code;
-    o.textContent = `${p.code}｜${p.name || ""}`;
-    sel.appendChild(o);
-  });
-}
-
-function renderHistory() {
-  const list = historyList;
-  list.innerHTML = "";
-  loadHistory().forEach(h => {
-    const div = document.createElement("div");
-    div.className = "list-item small";
-    div.textContent =
-      `${h.time} ${h.code} ${h.type} ${h.qty}`;
-    list.appendChild(div);
-  });
-}
-
-function clearInputs() {
-  codeEl.value = "";
-  nameEl.value = "";
-  categoryEl.value = "";
-  makerEl.value = "";
-  modelEl.value = "";
-}
-
-/* ===== DOM ===== */
-const codeEl = document.getElementById("code");
-const nameEl = document.getElementById("name");
-const categoryEl = document.getElementById("category");
-const makerEl = document.getElementById("maker");
-const modelEl = document.getElementById("model");
-const productList = document.getElementById("productList");
-const productSelect = document.getElementById("productSelect");
-const qtyEl = document.getElementById("qty");
-const historyList = document.getElementById("historyList");
-
-renderAll();
+render();
 </script>
 </body>
 </html>
