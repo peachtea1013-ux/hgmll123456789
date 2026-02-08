@@ -7,227 +7,281 @@
 <title>在庫管理ツール</title>
 
 <style>
-/* ====== 基本 ====== */
-:root {
-  --bg:#f6f7f9;
-  --primary:#2563eb;
-  --danger:#dc2626;
-  --warning:#f59e0b;
+:root{
+  --danger:#e53935;
+  --warning:#fb8c00;
+  --ok:#2e7d32;
+  --bg:#f5f5f5;
   --card:#ffffff;
-  --text:#111827;
 }
-
-* { box-sizing:border-box; }
-
-html, body {
+html,body{
   margin:0;
   padding:0;
-  height:100%;
-  overflow:hidden;
-  font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif;
-  background:var(--bg);
-  color:var(--text);
-}
-
-body {
   height:100dvh;
-  padding-top: env(safe-area-inset-top);
+  font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue","Hiragino Kaku Gothic ProN",Meiryo,sans-serif;
 }
-
-/* ====== レイアウト ====== */
-header {
-  height:56px;
+body{
+  overflow:hidden;
+  background:var(--bg);
+}
+.safe-area-top{
+  height:10dvh;
+  padding-top:env(safe-area-inset-top);
+  background:#000;
+}
+.app{
+  height:90dvh;
   display:flex;
-  align-items:center;
-  justify-content:space-around;
-  background:#fff;
-  border-bottom:1px solid #ddd;
+  flex-direction:column;
 }
-
-header button {
-  background:none;
-  border:none;
-  font-size:14px;
+header{
+  height:48px;
+  text-align:center;
+  font-weight:bold;
+  line-height:48px;
+  background:#222;
+  color:#fff;
 }
-
-main {
-  height:calc(100dvh - 56px);
-  overflow:auto;
+main{
+  flex:1;
+  overflow-y:auto;
+}
+section{
+  display:none;
   padding:8px;
 }
-
-/* ====== ボタン ====== */
-.btn {
-  padding:10px;
-  border-radius:8px;
+section.active{
+  display:block;
+}
+nav{
+  height:56px;
+  display:flex;
+  background:#111;
+}
+nav button{
+  flex:1;
+  color:#fff;
+  background:none;
   border:none;
-  font-size:14px;
+  font-size:12px;
 }
-
-.btn-primary { background:var(--primary); color:#fff; }
-.btn-danger  { background:var(--danger);  color:#fff; }
-.btn-warning { background:var(--warning); color:#fff; }
-
-/* ====== カード ====== */
-.card {
+.product-row,
+.history-row,
+.master-row{
   background:var(--card);
-  border-radius:10px;
-  padding:10px;
-  margin-bottom:8px;
+  margin-bottom:6px;
+  padding:6px;
+  border-radius:6px;
 }
+.stock.danger{color:var(--danger);font-weight:bold;}
+.stock.warning{color:var(--warning);font-weight:bold;}
+.stock.ok{color:var(--ok);}
 
-/* ====== モーダル ====== */
-.modal {
+.modal-root{
   position:fixed;
   inset:0;
-  background:rgba(0,0,0,.4);
+  background:rgba(0,0,0,.6);
   display:none;
   z-index:1000;
 }
-
-.modal.active { display:flex; }
-
-.modal-content {
+.modal-root.active{display:flex;}
+.modal{
   background:#fff;
-  width:90%;
-  max-height:80%;
   margin:auto;
-  border-radius:12px;
-  padding:12px;
-  overflow:auto;
+  width:90%;
+  border-radius:8px;
+  padding:8px;
 }
-
-/* ====== 入力 ====== */
-input, select, textarea {
-  width:100%;
-  padding:10px;
-  margin:4px 0;
-  font-size:16px;
+.modal footer{
+  display:flex;
+  gap:8px;
 }
+.modal footer button{flex:1;}
 </style>
 </head>
 
 <body>
+<div class="safe-area-top"></div>
 
-<header>
-  <button onclick="app.show('stock')">在庫</button>
-  <button onclick="app.show('history')">履歴</button>
-  <button onclick="app.show('master')">商品</button>
-  <button onclick="app.show('calendar')">交換</button>
-</header>
+<div class="app">
+<header id="header">在庫操作</header>
 
-<main id="app"></main>
+<main>
+<section data-screen="stock" class="active"></section>
+<section data-screen="history"></section>
+<section data-screen="master"></section>
+<section data-screen="calendar"></section>
+<section data-screen="data"></section>
+</main>
 
-<div class="modal" id="modal">
-  <div class="modal-content" id="modalContent"></div>
+<nav>
+<button data-nav="stock">在庫</button>
+<button data-nav="history">履歴</button>
+<button data-nav="master">マスタ</button>
+<button data-nav="calendar">周期</button>
+<button data-nav="data">連携</button>
+</nav>
+</div>
+
+<div class="modal-root" id="modalRoot">
+  <div class="modal">
+    <header id="modalTitle"></header>
+    <div id="modalBody"></div>
+    <footer>
+      <button id="modalCancel">キャンセル</button>
+      <button id="modalOk">確定</button>
+    </footer>
+  </div>
 </div>
 
 <script>
-/* ===============================
-   Store
-=============================== */
-const Store = {
-  load() {
-    return JSON.parse(localStorage.getItem('store') || '{}');
-  },
-  save(data) {
-    localStorage.setItem('store', JSON.stringify(data));
-  },
-  state: {
-    products: [],
-    history: [],
-    calendar: {
-      year: new Date().getFullYear(),
-      month: new Date().getMonth()
-    }
+/* =========================
+   STATE 定義
+========================= */
+const STORAGE_KEY="inventory_app_state";
+
+let state={
+  meta:{version:"1.0",lastUpdated:null},
+  masters:{},
+  histories:[],
+  orders:[],
+  inventories:{active:false,sessionId:null,startedAt:null,snapshot:{}},
+  ui:{
+    currentScreen:"stock",
+    selectedProductCode:null,
+    modal:{type:null,visible:false,payload:null},
+    filters:{category:null,keyword:""},
+    calendar:{year:new Date().getFullYear(),month:new Date().getMonth()+1}
   }
 };
 
-Object.assign(Store.state, Store.load());
+/* =========================
+   初期化
+========================= */
+function loadState(){
+  const raw=localStorage.getItem(STORAGE_KEY);
+  if(raw){
+    try{ state=JSON.parse(raw); }
+    catch{ saveState(); }
+  }else{
+    saveState();
+  }
+  recalcAllStocks();
+  render();
+}
+function saveState(){
+  state.meta.lastUpdated=new Date().toISOString();
+  localStorage.setItem(STORAGE_KEY,JSON.stringify(state));
+}
 
-/* ===============================
-   App
-=============================== */
-const app = {
-  current:null,
+/* =========================
+   在庫再計算
+========================= */
+function recalcAllStocks(){
+  Object.values(state.masters).forEach(m=>m.stockCache=0);
+  state.histories
+    .filter(h=>!h.deleted)
+    .sort((a,b)=>new Date(a.date)-new Date(b.date))
+    .forEach(h=>{
+      const m=state.masters[h.productCode];
+      if(!m)return;
+      if(h.type==="use")m.stockCache-=h.quantity;
+      if(h.type==="receive")m.stockCache+=h.quantity;
+      if(h.type==="inventory_adjust")m.stockCache=h.quantity;
+    });
+  saveState();
+}
 
-  show(view) {
-    this.current = view;
-    this.render();
-  },
+/* =========================
+   画面制御
+========================= */
+function setScreen(name){
+  state.ui.currentScreen=name;
+  document.querySelectorAll("section").forEach(s=>{
+    s.classList.toggle("active",s.dataset.screen===name);
+  });
+  document.getElementById("header").textContent={
+    stock:"在庫操作",history:"操作履歴",
+    master:"商品マスタ",calendar:"交換周期",data:"データ連携"
+  }[name];
+}
 
-  render() {
-    const el = document.getElementById('app');
-    if (this.current === 'calendar') {
-      el.innerHTML = this.calendarView();
-    } else {
-      el.innerHTML = `<div class="card">（${this.current}画面 実装済み）</div>`;
-    }
-  },
+/* =========================
+   モーダル
+========================= */
+function openModal(title,html,onOk){
+  state.ui.modal.visible=true;
+  document.getElementById("modalTitle").textContent=title;
+  document.getElementById("modalBody").innerHTML=html;
+  document.getElementById("modalRoot").classList.add("active");
+  document.getElementById("modalOk").onclick=()=>{
+    onOk();
+    closeModal();
+  };
+}
+function closeModal(){
+  state.ui.modal.visible=false;
+  document.getElementById("modalRoot").classList.remove("active");
+}
 
-  /* ===== カレンダー ===== */
-  calendarView() {
-    const {year, month} = Store.state.calendar;
-    const first = new Date(year, month, 1);
-    const last = new Date(year, month + 1, 0);
+/* =========================
+   業務ロジック
+========================= */
+function addHistory(h){
+  state.histories.push(h);
+  recalcAllStocks();
+}
+function useProduct(code,qty){
+  addHistory({id:Date.now(),productCode:code,type:"use",quantity:qty,date:new Date().toISOString(),deleted:false});
+}
+function receiveProduct(code,qty){
+  addHistory({id:Date.now(),productCode:code,type:"receive",quantity:qty,date:new Date().toISOString(),deleted:false});
+}
 
-    let html = `
-      <div class="card">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <button onclick="app.prevMonth()">◀</button>
-          <strong>${year}年 ${month+1}月</strong>
-          <button onclick="app.nextMonth()">▶</button>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(7,1fr);margin-top:8px">
+/* =========================
+   Render
+========================= */
+function renderStock(){
+  const el=document.querySelector('[data-screen="stock"]');
+  el.innerHTML="";
+  Object.values(state.masters).filter(m=>!m.deleted).forEach(m=>{
+    const row=document.createElement("div");
+    row.className="product-row";
+    let cls="ok";
+    if(m.stockCache<m.minStock)cls="danger";
+    row.innerHTML=`
+      <div>${m.name}</div>
+      <div class="stock ${cls}">${m.stockCache}</div>
+      <button>使用</button>
+      <button>納入</button>
     `;
-
-    for(let i=0;i<first.getDay();i++) html += `<div></div>`;
-    for(let d=1;d<=last.getDate();d++) html += `<div>${d}</div>`;
-
-    html += `</div></div>`;
-    return html;
-  },
-
-  prevMonth() {
-    const c = Store.state.calendar;
-    c.month--;
-    if (c.month < 0) { c.month=11; c.year--; }
-    Store.save(Store.state);
-    this.render();
-  },
-
-  nextMonth() {
-    const c = Store.state.calendar;
-    c.month++;
-    if (c.month > 11) { c.month=0; c.year++; }
-    Store.save(Store.state);
-    this.render();
-  }
-};
-
-/* ===== 初期表示 ===== */
-app.show('stock');
-
-/* ===== モーダル制御 ===== */
-const modal = document.getElementById('modal');
-const modalContent = document.getElementById('modalContent');
-
-function openModal(html) {
-  modalContent.innerHTML = html;
-  modal.classList.add('active');
+    row.querySelectorAll("button")[0].onclick=()=>{
+      openModal("使用",'<input id="qty" type="number">',()=>{
+        useProduct(m.productCode,Number(qty.value));
+      });
+    };
+    row.querySelectorAll("button")[1].onclick=()=>{
+      openModal("納入",'<input id="qty" type="number">',()=>{
+        receiveProduct(m.productCode,Number(qty.value));
+      });
+    };
+    el.appendChild(row);
+  });
+}
+function render(){
+  renderStock();
 }
 
-function closeModal() {
-  modal.classList.remove('active');
-  modalContent.innerHTML = '';
-}
+/* =========================
+   ナビイベント
+========================= */
+document.querySelectorAll("nav button").forEach(b=>{
+  b.onclick=()=>{ setScreen(b.dataset.nav); };
+});
+document.getElementById("modalCancel").onclick=closeModal;
 
-document.body.addEventListener('touchmove', e => {
-  if (modal.classList.contains('active') && !e.target.closest('.modal-content')) {
-    e.preventDefault();
-  }
-}, { passive:false });
+/* 初期商品（サンプルなし → 空運用） */
+loadState();
 </script>
-
 </body>
 </html>
