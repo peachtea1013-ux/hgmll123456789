@@ -1,6 +1,6 @@
 {
-  "name": "在庫管理アプリ",
-  "short_name": "在庫管理",
+  "name": "在庫確認",
+  "short_name": "在庫",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#ffffff",
